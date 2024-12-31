@@ -1,12 +1,14 @@
 """
 steering motion model sample
 
+reference:
+https://github.com/AtsushiSakai/PythonRobotics/blob/master/PathTracking/pure_pursuit/pure_pursuit.py
+
 author: khiro
 """
 
 import numpy as np
-from numpy.linalg import norm
-from math import cos, sin, pi, atan, atan2, hypot
+from math import cos, sin, pi, atan2, hypot
 import matplotlib.pyplot as plt
 from PIL import Image
 import os
@@ -18,16 +20,17 @@ SIM_TIME = 100 # simulation time [s]
 
 Kp = 1.0  # speed proportional gain
 k = 0.1  # look forward gain
-LookDist = 2.0
+LookDist = 1.5
 VDesired = 10.0 
 
 class State:
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, psi=0.0, v=0.0):
+    def __init__(self, x=0.0, y=0.0, yaw=0.0, psi=0.0, v=0.0, psv=0.0):
         self.x = x
         self.y = y
         self.yaw = yaw
         self.psi = psi
         self.v = v
+        self.psv = psv
 
     def calculate_distance(self, px, py):
         dx = self.x - px
@@ -40,6 +43,7 @@ class States:
         self.yaw = []
         self.psi = []
         self.v = []
+        self.psv = []
         self.t = []
     
     def append(self, time, state:State):
@@ -49,6 +53,7 @@ class States:
         self.yaw.append(state.yaw)
         self.psi.append(state.psi)
         self.v.append(state.v)
+        self.psv.append(state.psv)
 
 def proportional_control(target, current):
     a = Kp * (target - current)
@@ -121,15 +126,17 @@ class SteerModel:
 
         return input_vec
 
-    def control_input(self, time, state: State, ai, di):
+    def control_input(self, time, state: State, ai, alpha, di):
 
         v_des = ai
         psi_star = di
 
-        #delta = self.tread_m / 2 * (v_des/self.wheel_base_m*sin(state.psi) + psi_star* cos(state.psi))
-        delta = self.tread_m / 2 * (v_des/self.wheel_base_m*sin(di) + psi_star*cos(di))
-        tasr = v_des + delta
-        tasl = v_des - delta
+        #delta = self.tread_m / 2 * (v_des/self.wheel_base_m*sin(state.psi)/cos(state.psi))
+        delta = self.tread_m / 2 * (v_des/self.wheel_base_m*sin(psi_star) +  alpha * cos(psi_star))
+        #tasr = v_des + delta
+        #tasl = v_des - delta
+        tasr = v_des * abs(cos(psi_star)) + delta  # derate w.r.t. heading error
+        tasl = v_des * abs(cos(psi_star)) - delta
 
         input_vec = self.calculate_input(tasr, tasl)
         print(input_vec, '\t', tasl, tasr)
@@ -188,7 +195,7 @@ class SteerModel:
         alpha = atan2(ty - state.y, tx - state.x) - state.yaw
         delta = atan2(2*self.wheel_base_m*sin(alpha) / Lf, 1.0)
 
-        return delta, idx
+        return delta, alpha, idx
     
 def plot_arrow(x, y, yaw, length=1.0, width=0.5, fc="r", ec="k"):
     if not isinstance(x, float):
@@ -200,7 +207,6 @@ def plot_arrow(x, y, yaw, length=1.0, width=0.5, fc="r", ec="k"):
 
 
 def main():
-    print("Run " + __file__)
 
     # set parameters
     tire_radius_m = 0.1
@@ -208,10 +214,10 @@ def main():
     wheel_base_m = 0.6
 
     cx = np.arange(0, 30, 0.5)
-    cy = [-sin(ix / 5.0) * ix / 2.0 for ix in cx]
+    cy = [cos(ix / 5.0) * ix / 3.0 for ix in cx]
 
     # initialize
-    state = State(x=0.0, y=0.0, yaw=1.57, psi=0.0, v=0.0)
+    state = State(x=0.0, y=0.0, yaw=-1.5, psi=0.0, v=0.0)
     # elapsed time
     time = 0.0
     states = States()
@@ -224,16 +230,17 @@ def main():
     while SIM_TIME >= time and target_idx < len(cx)-1:
 
         ai = proportional_control(VDesired, state.v)
-        di, target_idx = sm.pure_pursuit(
+        di, alpha, target_idx = sm.pure_pursuit(
             state, rc, target_idx
         )
 
-        input_vec = sm.control_input(time, state, ai, di)
+        input_vec = sm.control_input(time, state, ai, alpha, di)
         st_vec = sm.output_equation(state, input_vec)
 
         state.x = st_vec[0,0]
         state.y = st_vec[1,0]
         state.yaw = st_vec[2,0]
+        state.psv = st_vec[3,0] - state.psv
         state.psi = st_vec[3,0]
         state.v = input_vec[0,0]*cos(state.psi)
 
@@ -242,10 +249,6 @@ def main():
 
 
         print('{:.2f}, {:.5f}, {:.5f}, {:.5f}, {:.5f}'.format(time, state.x, state.y, state.yaw, state.psi))
-
-        di, target_idx = sm.pure_pursuit(
-            state, rc, target_idx
-        )
 
         if show_plot:
             plt.cla()
